@@ -70,8 +70,8 @@
 // In the prototype, only one LCD digit is implemented. The seven segments (a-g)
 // are conected to PORTA pins 0..6 respectively and the common is connected to pin 7.
 
-#define mLCD_Init() { TRISA = 0; LATA = 0; }
-#define mLCD_Invert() { LATA = ~LATA; }
-#define mLCD_SetDigit(v) { LATA = ((LATA & 0x80) | (v & 0x7f)); }
+#define mLCD_Init() { TRISB = 0; LATB = 0; TRISAbits.TRISA2 = 0; LATAbits.LATA2 = 0;}
+#define mLCD_Invert() { LATB = ~LATB; LATAbits.LATA2 = ~LATAbits.LATA2; }
+#define mLCD_SetDigit(v) { LATB = v ^ (LATAbits.LATA2? 0xff : 00); }
 
 

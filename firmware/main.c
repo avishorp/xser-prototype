@@ -73,6 +73,37 @@ unsigned char    RS232cp;       // current position within the buffer
 unsigned char RS232_Out_Data_Rdy = 0;
 USB_HANDLE  lastTransmission;
 
+// HID
+USB_HANDLE HIDOutHandle = 0;    //USB handle.  Must be initialized to 0 at startup.
+USB_HANDLE HIDInHandle = 0;     //USB handle.  Must be initialized to 0 at startup.
+
+#if defined(__XC8)
+    #if defined(_18F14K50) || defined(_18F13K50) || defined(_18LF14K50) || defined(_18LF13K50)
+        #define RX_DATA_BUFFER_ADDRESS @0x260
+        #define TX_DATA_BUFFER_ADDRESS @0x2A0
+    #elif  defined(_18F2455)   || defined(_18F2550)   || defined(_18F4455)  || defined(_18F4550)\
+        || defined(_18F2458)   || defined(_18F2453)   || defined(_18F4558)  || defined(_18F4553)\
+        || defined(_18LF24K50) || defined(_18F24K50)  || defined(_18LF25K50)\
+        || defined(_18F25K50)  || defined(_18LF45K50) || defined(_18F45K50)
+        #define RX_DATA_BUFFER_ADDRESS @0x500
+        #define TX_DATA_BUFFER_ADDRESS @0x540
+    #elif defined(_18F4450) || defined(_18F2450)
+        #define RX_DATA_BUFFER_ADDRESS @0x480
+        #define TX_DATA_BUFFER_ADDRESS @0x4C0
+    #elif defined(_16F1459)
+        #define RX_DATA_BUFFER_ADDRESS @0x2050
+        #define TX_DATA_BUFFER_ADDRESS @0x20A0
+    #else
+        #define RX_DATA_BUFFER_ADDRESS
+        #define RX_DATA_BUFFER_ADDRESS
+    #endif
+#else
+    #define RX_DATA_BUFFER_ADDRESS
+    #define TX_DATA_BUFFER_ADDRESS
+#endif
+unsigned char ReceivedDataBuffer[64] RX_DATA_BUFFER_ADDRESS;
+//unsigned char ToSendDataBuffer[64] TX_DATA_BUFFER_ADDRESS;
+
 //BOOL stringPrinted;
 
 
@@ -84,157 +115,50 @@ void YourHighPriorityISRCode();
 void YourLowPriorityISRCode();
 void USBCBSendResume(void);
 void BlinkUSBStatus(void);
+void InvertLCD(void);
 void UserInit(void);
 void InitializeUSART(void);
 void putcUSART(char c);
 unsigned char getcUSART ();
 
-/** VECTOR REMAPPING ***********************************************/
-#if defined(__18CXX)
-	//On PIC18 devices, addresses 0x00, 0x08, and 0x18 are used for
-	//the reset, high priority interrupt, and low priority interrupt
-	//vectors.  However, the current Microchip USB bootloader 
-	//examples are intended to occupy addresses 0x00-0x7FF or
-	//0x00-0xFFF depending on which bootloader is used.  Therefore,
-	//the bootloader code remaps these vectors to new locations
-	//as indicated below.  This remapping is only necessary if you
-	//wish to program the hex file generated from this project with
-	//the USB bootloader.  If no bootloader is used, edit the
-	//usb_config.h file and comment out the following defines:
-	//#define PROGRAMMABLE_WITH_USB_HID_BOOTLOADER
-	//#define PROGRAMMABLE_WITH_USB_LEGACY_CUSTOM_CLASS_BOOTLOADER
-	
-	#if defined(PROGRAMMABLE_WITH_USB_HID_BOOTLOADER)
-		#define REMAPPED_RESET_VECTOR_ADDRESS			0x1000
-		#define REMAPPED_HIGH_INTERRUPT_VECTOR_ADDRESS	0x1008
-		#define REMAPPED_LOW_INTERRUPT_VECTOR_ADDRESS	0x1018
-	#elif defined(PROGRAMMABLE_WITH_USB_MCHPUSB_BOOTLOADER)	
-		#define REMAPPED_RESET_VECTOR_ADDRESS			0x800
-		#define REMAPPED_HIGH_INTERRUPT_VECTOR_ADDRESS	0x808
-		#define REMAPPED_LOW_INTERRUPT_VECTOR_ADDRESS	0x818
-	#else	
-		#define REMAPPED_RESET_VECTOR_ADDRESS			0x00
-		#define REMAPPED_HIGH_INTERRUPT_VECTOR_ADDRESS	0x08
-		#define REMAPPED_LOW_INTERRUPT_VECTOR_ADDRESS	0x18
-	#endif
-	
-	#if defined(PROGRAMMABLE_WITH_USB_HID_BOOTLOADER)||defined(PROGRAMMABLE_WITH_USB_MCHPUSB_BOOTLOADER)
-	extern void _startup (void);        // See c018i.c in your C18 compiler dir
-	#pragma code REMAPPED_RESET_VECTOR = REMAPPED_RESET_VECTOR_ADDRESS
-	void _reset (void)
-	{
-	    _asm goto _startup _endasm
-	}
-	#endif
-	#pragma code REMAPPED_HIGH_INTERRUPT_VECTOR = REMAPPED_HIGH_INTERRUPT_VECTOR_ADDRESS
-	void Remapped_High_ISR (void)
-	{
-	     _asm goto YourHighPriorityISRCode _endasm
-	}
-	#pragma code REMAPPED_LOW_INTERRUPT_VECTOR = REMAPPED_LOW_INTERRUPT_VECTOR_ADDRESS
-	void Remapped_Low_ISR (void)
-	{
-	     _asm goto YourLowPriorityISRCode _endasm
-	}
-	
-	#if defined(PROGRAMMABLE_WITH_USB_HID_BOOTLOADER)||defined(PROGRAMMABLE_WITH_USB_MCHPUSB_BOOTLOADER)
-	//Note: If this project is built while one of the bootloaders has
-	//been defined, but then the output hex file is not programmed with
-	//the bootloader, addresses 0x08 and 0x18 would end up programmed with 0xFFFF.
-	//As a result, if an actual interrupt was enabled and occured, the PC would jump
-	//to 0x08 (or 0x18) and would begin executing "0xFFFF" (unprogrammed space).  This
-	//executes as nop instructions, but the PC would eventually reach the REMAPPED_RESET_VECTOR_ADDRESS
-	//(0x1000 or 0x800, depending upon bootloader), and would execute the "goto _startup".  This
-	//would effective reset the application.
-	
-	//To fix this situation, we should always deliberately place a 
-	//"goto REMAPPED_HIGH_INTERRUPT_VECTOR_ADDRESS" at address 0x08, and a
-	//"goto REMAPPED_LOW_INTERRUPT_VECTOR_ADDRESS" at address 0x18.  When the output
-	//hex file of this project is programmed with the bootloader, these sections do not
-	//get bootloaded (as they overlap the bootloader space).  If the output hex file is not
-	//programmed using the bootloader, then the below goto instructions do get programmed,
-	//and the hex file still works like normal.  The below section is only required to fix this
-	//scenario.
-	#pragma code HIGH_INTERRUPT_VECTOR = 0x08
-	void High_ISR (void)
-	{
-	     _asm goto REMAPPED_HIGH_INTERRUPT_VECTOR_ADDRESS _endasm
-	}
-	#pragma code LOW_INTERRUPT_VECTOR = 0x18
-	void Low_ISR (void)
-	{
-	     _asm goto REMAPPED_LOW_INTERRUPT_VECTOR_ADDRESS _endasm
-	}
-	#endif	//end of "#if defined(PROGRAMMABLE_WITH_USB_HID_BOOTLOADER)||defined(PROGRAMMABLE_WITH_USB_LEGACY_CUSTOM_CLASS_BOOTLOADER)"
 
-	#pragma code
+#define REMAPPED_RESET_VECTOR_ADDRESS			0x00
+#define REMAPPED_HIGH_INTERRUPT_VECTOR_ADDRESS	0x08
+#define REMAPPED_LOW_INTERRUPT_VECTOR_ADDRESS	0x18
 	
-	
-	//These are your actual interrupt handling routines.
-	#pragma interrupt YourHighPriorityISRCode
-	void YourHighPriorityISRCode()
-	{
-		//Check which interrupt flag caused the interrupt.
-		//Service the interrupt
-		//Clear the interrupt flag
-		//Etc.
-        #if defined(USB_INTERRUPT)
-	        USBDeviceTasks();
-        #endif
-	
-	}	//This return will be a "retfie fast", since this is in a #pragma interrupt section 
-	#pragma interruptlow YourLowPriorityISRCode
-	void YourLowPriorityISRCode()
-	{
-		//Check which interrupt flag caused the interrupt.
-		//Service the interrupt
-		//Clear the interrupt flag
-		//Etc.
-	
-	}	//This return will be a "retfie", since this is in a #pragma interruptlow section 
+#pragma code REMAPPED_HIGH_INTERRUPT_VECTOR = REMAPPED_HIGH_INTERRUPT_VECTOR_ADDRESS
+void Remapped_High_ISR (void)
+{
+     _asm goto YourHighPriorityISRCode _endasm
+}
 
-#elif defined(__C30__) || defined __XC16__
-    #if defined(PROGRAMMABLE_WITH_USB_HID_BOOTLOADER)
-        /*
-         *	ISR JUMP TABLE
-         *
-         *	It is necessary to define jump table as a function because C30 will
-         *	not store 24-bit wide values in program memory as variables.
-         *
-         *	This function should be stored at an address where the goto instructions 
-         *	line up with the remapped vectors from the bootloader's linker script.
-         *  
-         *  For more information about how to remap the interrupt vectors,
-         *  please refer to AN1157.  An example is provided below for the T2
-         *  interrupt with a bootloader ending at address 0x1400
-         */
-//        void __attribute__ ((address(0x1404))) ISRTable(){
-//        
-//        	asm("reset"); //reset instruction to prevent runaway code
-//        	asm("goto %0"::"i"(&_T2Interrupt));  //T2Interrupt's address
-//        }
-    #endif
-#elif defined(_PIC14E)
-    	//These are your actual interrupt handling routines.
-	void interrupt ISRCode()
-	{
-		//Check which interrupt flag caused the interrupt.
-		//Service the interrupt
-		//Clear the interrupt flag
-		//Etc.
-        #if defined(USB_INTERRUPT)
+#pragma code REMAPPED_LOW_INTERRUPT_VECTOR = REMAPPED_LOW_INTERRUPT_VECTOR_ADDRESS
+void Remapped_Low_ISR (void)
+{
+     _asm goto YourLowPriorityISRCode _endasm
+}
+	
 
-	        USBDeviceTasks();
-        #endif
-	}
-#endif
+#pragma code
+	
+	
+//These are your actual interrupt handling routines.
+#pragma interrupt YourHighPriorityISRCode
+void YourHighPriorityISRCode()
+{
+
+}	//This return will be a "retfie fast", since this is in a #pragma interrupt section 
+
+#pragma interruptlow YourLowPriorityISRCode
+void YourLowPriorityISRCode()
+{
+
+}	//This return will be a "retfie", since this is in a #pragma interruptlow section 
 
 
 
 /** DECLARATIONS ***************************************************/
-#if defined(__18CXX)
-    #pragma code
-#endif
+#pragma code
 
 /******************************************************************************
  * Function:        void main(void)
@@ -251,22 +175,14 @@ unsigned char getcUSART ();
  *
  * Note:            None
  *****************************************************************************/
-#if defined(__18CXX)
 void main(void)
-#else
-int main(void)
-#endif
 {   
     InitializeSystem();
 
-    #if defined(USB_INTERRUPT)
-        USBDeviceAttach();
-    #endif
 
     while(1)
     {
-        #if defined(USB_POLLING)
-		// Check bus status and service USB interrupts.
+	// Check bus status and service USB interrupts.
         USBDeviceTasks(); // Interrupt or polling method.  If using polling, must call
         				  // this function periodically.  This function will take care
         				  // of processing and responding to SETUP transactions 
@@ -279,7 +195,6 @@ int main(void)
         				  // "or faster" applies])  In most cases, the USBDeviceTasks() 
         				  // function does not take very long to execute (ex: <100 
         				  // instruction cycles) before it returns.
-        #endif
     				  
 
 		// Application-specific tasks.
@@ -311,158 +226,8 @@ int main(void)
  *******************************************************************/
 static void InitializeSystem(void)
 {
-    #if (defined(__18CXX) & !defined(PIC18F87J50_PIM) & !defined(PIC18F97J94_FAMILY))
-        ADCON1 |= 0x0F;                 // Default all pins to digital
-    #elif defined(__C30__) || defined __XC16__
-    	#if defined(__PIC24FJ256DA210__) || defined(__PIC24FJ256GB210__)
-    		ANSA = 0x0000;
-    		ANSB = 0x0000;
-    		ANSC = 0x0000;
-    		ANSD = 0x0000;
-    		ANSE = 0x0000;
-    		ANSF = 0x0000;
-    		ANSG = 0x0000;
-       #elif defined(__dsPIC33EP512MU810__) || defined (__PIC24EP512GU810__)
-        	ANSELA = 0x0000;
-    		ANSELB = 0x0000;
-    		ANSELC = 0x0000;
-    		ANSELD = 0x0000;
-    		ANSELE = 0x0000;
-    		ANSELG = 0x0000;
-            
-
-        #else
-        	AD1PCFGL = 0xFFFF;
-        #endif  
-    #elif defined(__C32__)
-        AD1PCFG = 0xFFFF;
-    #endif
-
-    #if defined(PIC18F87J50_PIM) || defined(PIC18F46J50_PIM) || defined(PIC18F47J53_PIM)
-	//On the PIC18F87J50 Family of USB microcontrollers, the PLL will not power up and be enabled
-	//by default, even if a PLL enabled oscillator configuration is selected (such as HS+PLL).
-	//This allows the device to power up at a lower initial operating frequency, which can be
-	//advantageous when powered from a source which is not gauranteed to be adequate for 48MHz
-	//operation.  On these devices, user firmware needs to manually set the OSCTUNE<PLLEN> bit to
-	//power up the PLL.
-    {
-        unsigned int pll_startup_counter = 600;
-        OSCTUNEbits.PLLEN = 1;  //Enable the PLL and wait 2+ms until the PLL locks before enabling USB module
-        while(pll_startup_counter--);
-    }
-    //Device switches over automatically to PLL output after PLL is locked and ready.
-    #endif
-
-    #if defined(PIC18F97J94_FAMILY)
-        //Configure I/O pins for digital input mode.
-        ANCON1 = 0xFF;
-        ANCON2 = 0xFF;
-        ANCON3 = 0xFF;
-        #if(USB_SPEED_OPTION == USB_FULL_SPEED)
-            //Enable INTOSC active clock tuning if full speed
-            OSCCON5 = 0x90; //Enable active clock self tuning for USB operation
-            while(OSCCON2bits.LOCK == 0);   //Make sure PLL is locked/frequency is compatible
-                                            //with USB operation (ex: if using two speed 
-                                            //startup or otherwise performing clock switching)
-        #endif
-    #endif
-    
-    #if defined(PIC18F45K50_FAMILY)
-        //Configure oscillator settings for clock settings compatible with USB 
-        //operation.  Note: Proper settings depends on USB speed (full or low).
-        #if(USB_SPEED_OPTION == USB_FULL_SPEED)
-            OSCTUNE = 0x80; //3X PLL ratio mode selected
-            OSCCON = 0x70;  //Switch to 16MHz HFINTOSC
-            OSCCON2 = 0x10; //Enable PLL, SOSC, PRI OSC drivers turned off
-            while(OSCCON2bits.PLLRDY != 1);   //Wait for PLL lock
-            *((unsigned char*)0xFB5) = 0x90;  //Enable active clock tuning for USB operation
-        #endif
-        //Configure all I/O pins for digital mode (except RA0/AN0 which has POT on demo board)
-        ANSELA = 0x01;
-        ANSELB = 0x00;
-        ANSELC = 0x00;
-        ANSELD = 0x00;
-        ANSELE = 0x00;
-    #endif
-    #if defined(PIC18F87J50_PIM)
-	//Configure all I/O pins to use digital input buffers.  The PIC18F87J50 Family devices
-	//use the ANCONx registers to control this, which is different from other devices which
-	//use the ADCON1 register for this purpose.
-    WDTCONbits.ADSHR = 1;			// Select alternate SFR location to access ANCONx registers
-    ANCON0 = 0xFF;                  // Default all pins to digital
-    ANCON1 = 0xFF;                  // Default all pins to digital
-    WDTCONbits.ADSHR = 0;			// Select normal SFR locations
-    #endif
-
-    #if defined(PIC18F46J50_PIM) || defined(PIC18F47J53_PIM)
-	//Configure all I/O pins to use digital input buffers.  The PIC18F87J50 Family devices
-	//use the ANCONx registers to control this, which is different from other devices which
-	//use the ADCON1 register for this purpose.
-    ANCON0 = 0x7F;                  // All pins to digital (except AN7: temp sensor)
-    ANCON1 = 0xBF;                  // Default all pins to digital.  Bandgap on.
-
-    #endif
-    
-   #if defined(PIC24FJ64GB004_PIM) || defined(PIC24FJ256DA210_DEV_BOARD)
-	//On the PIC24FJ64GB004 Family of USB microcontrollers, the PLL will not power up and be enabled
-	//by default, even if a PLL enabled oscillator configuration is selected (such as HS+PLL).
-	//This allows the device to power up at a lower initial operating frequency, which can be
-	//advantageous when powered from a source which is not gauranteed to be adequate for 32MHz
-	//operation.  On these devices, user firmware needs to manually set the CLKDIV<PLLEN> bit to
-	//power up the PLL.
-    {
-        unsigned int pll_startup_counter = 600;
-        CLKDIVbits.PLLEN = 1;
-        while(pll_startup_counter--);
-    }
-
-    //Device switches over automatically to PLL output after PLL is locked and ready.
-    #endif
-
-	#if defined(__32MX460F512L__)|| defined(__32MX795F512L__)
-    // Configure the PIC32 core for the best performance
-    // at the operating frequency. The operating frequency is already set to 
-    // 60MHz through Device Config Registers
-    SYSTEMConfigPerformance(60000000);
-	#endif
-
-   #if defined(__dsPIC33EP512MU810__) || defined (__PIC24EP512GU810__)
-
-    // Configure the device PLL to obtain 60 MIPS operation. The crystal
-    // frequency is 8MHz. Divide 8MHz by 2, multiply by 60 and divide by
-    // 2. This results in Fosc of 120MHz. The CPU clock frequency is
-    // Fcy = Fosc/2 = 60MHz. Wait for the Primary PLL to lock and then
-    // configure the auxilliary PLL to provide 48MHz needed for USB 
-    // Operation.
-
-	PLLFBD = 58;				/* M  = 60	*/
-	CLKDIVbits.PLLPOST = 0;		/* N1 = 2	*/
-	CLKDIVbits.PLLPRE = 0;		/* N2 = 2	*/
-	OSCTUN = 0;			
-
-    /*	Initiate Clock Switch to Primary
-     *	Oscillator with PLL (NOSC= 0x3)*/
-	
-    __builtin_write_OSCCONH(0x03);		
-	__builtin_write_OSCCONL(0x01);
-	
-    
-	while (OSCCONbits.COSC != 0x3);       
-
-    // Configuring the auxiliary PLL, since the primary
-    // oscillator provides the source clock to the auxiliary
-    // PLL, the auxiliary oscillator is disabled. Note that
-    // the AUX PLL is enabled. The input 8MHz clock is divided
-    // by 2, multiplied by 24 and then divided by 2. Wait till 
-    // the AUX PLL locks.
-
-    ACLKCON3 = 0x24C1;   
-    ACLKDIV3 = 0x7;
-    ACLKCON3bits.ENAPLL = 1;
-    while(ACLKCON3bits.APLLCK != 1); 
-
-    #endif
-
+    // Configure all pins as digital
+    ADCON1 = 0x0f;
 
 //	The USB specifications require that USB peripheral devices must never source
 //	current onto the Vbus pin.  Additionally, USB peripherals should not source
@@ -505,6 +270,9 @@ static void InitializeSystem(void)
 
     USBDeviceInit();	//usb_device.c.  Initializes USB module SFRs and firmware
     					//variables to known states.
+
+    HIDOutHandle = 0;
+    HIDInHandle = 0;
 }//end InitializeSystem
 
 
@@ -537,11 +305,13 @@ void UserInit(void)
 		USB_Out_Buffer[i] = 0;
     }
 
-	NextUSBOut = 0;
-	LastRS232Out = 0;
-	lastTransmission = 0;
+    NextUSBOut = 0;
+    LastRS232Out = 0;
+    lastTransmission = 0;
 
-	mInitAllLEDs();
+    mInitAllLEDs();
+    mLCD_Init();
+    mLCD_SetDigit(0x06);
 }//end UserInit
 
 /******************************************************************************
@@ -562,109 +332,22 @@ void UserInit(void)
  *****************************************************************************/
 void InitializeUSART(void)
 {
-    #if defined(_PIC14E)
-        ANSELA = 0x00;
-        ANSELB = 0x00;
-        ANSELC = 0x00;
-        TRISA  = 0x00;
-        TRISB  = 0x00;
-        TRISC  = 0x00;
-        OSCTUNE = 0;
-    #if defined (USE_INTERNAL_OSC)
-        OSCCON = 0x7C;   // PLL enabled, 3x, 16MHz internal osc, SCS external
-        OSCCONbits.SPLLMULT = 1;   // 1=3x, 0=4x
-        ACTCON = 0x90;   // Clock recovery on, Clock Recovery enabled; SOF packet
-    #else
-        OSCCON = 0x3C;   // PLL enabled, 3x, 16MHz internal osc, SCS external
-        OSCCONbits.SPLLMULT = 0;   // 1=3x, 0=4x
-        ACTCON = 0x00;   // Clock recovery off, Clock Recovery enabled; SOF packet
-    #endif
-    #endif
 
-    #if defined(__18CXX) || defined(__XC8)
-	    unsigned char c;
-        #if defined(__18F14K50)
-    	    //ANSELHbits.ANS11 = 0;	// Make RB5 digital so USART can use pin for Rx
-            ANSELH = 0;
-            #ifndef BAUDCON
-                #define BAUDCON BAUDCTL
-            #endif
-        #endif
+    unsigned char c;
 
-        #if defined(PIC16F1_LPC_USB_DEVELOPMENT_KIT)
-            ANSELBbits.ANSB5 = 0;   //Make RB5 digital
-        #endif
-
-        UART_TRISRx=1;				// RX
-        UART_TRISTx=0;				// TX
-        TXSTA = 0x24;       	// TX enable BRGH=1
-        RCSTA = 0x90;       	// Single Character RX
-        SPBRG = 0x71;
-        SPBRGH = 0x02;      	// 0x0271 for 48MHz -> 19200 baud
-        BAUDCON = 0x08;     	// BRG16 = 1
-        c = RCREG;				// read 
-    #endif
-
-    #if defined(__C30__) || defined __XC16__
-        #if defined( __PIC24FJ256GB110__ ) || defined( PIC24FJ256GB210_PIM )
-            // PPS - Configure U2RX - put on pin 49 (RP10)
-            RPINR19bits.U2RXR = 10;
-
-            // PPS - Configure U2TX - put on pin 50 (RP17)
-            RPOR8bits.RP17R = 5;
-        #elif defined(__PIC24FJ64GB004__)
-            // PPS - Configure U2RX - put on RC3/pin 36 (RP19)
-            RPINR19bits.U2RXR = 19;
-
-            // PPS - Configure U2TX - put on RC9/pin 5 (RP25)
-            RPOR12bits.RP25R = 5;
-        #elif defined(__PIC24FJ64GB502__)
-            // PPS - Configure U2RX - put on RB7 (RP7)
-            RPINR19bits.U2RXR = 7;
-
-            // PPS - Configure U2TX - put on RB8 (RP8)
-            RPOR4bits.RP8R = 5;
-        #elif defined(__PIC24FJ256DA210__)
-            // PPS - Configure U2RX - put on RD0 pin 72 (RP11)
-            // Make sure jumper JP12 is in 2-4 position if using the 
-            // PIC24FJ256DA210 Development Board (microchipDIRECT.com DM240312).
-            // Also make sure JP16 and JP17 are in the 1-2 position on this board.
-            RPINR19bits.U2RXR = 11; //Assign U2RX to RD0/RP11 pin.  
-    
-            // PPS - Configure U2TX - put on RF3/pin 51 (RP16)
-            RPOR8bits.RP16R = 5;
-
-            TRISFbits.TRISF3 = 0;
-        #elif defined(__dsPIC33EP512MU810__) || defined (__PIC24EP512GU810__)
-            // The dsPIC33EP512MU810 features Peripheral Pin
-            // select. The following statements map UART2 to 
-            // device pins which would connect to the the 
-            // RX232 transciever on the Explorer 16 board.
-
-             RPINR19 = 0;
-             RPINR19 = 0x64;
-             RPOR9bits.RP101R = 0x3;
-
-        #else
-            #error Verify that any required PPS is done here.
-        #endif
-
-        UART2Init();
-    #endif
-
-    #if defined(__C32__)
-        UART2Init();
-    #endif
+    UART_TRISRx=1;				// RX
+    UART_TRISTx=0;				// TX
+    TXSTA = 0x24;       	// TX enable BRGH=1
+    RCSTA = 0x90;       	// Single Character RX
+    SPBRG = 0x71;
+    SPBRGH = 0x02;      	// 0x0271 for 48MHz -> 19200 baud
+    BAUDCON = 0x08;     	// BRG16 = 1
+    c = RCREG;				// read 
 
 }//end InitializeUSART
 
-#if defined(__18CXX) || defined(__XC8)
-    #define mDataRdyUSART() PIR1bits.RCIF
-    #define mTxRdyUSART()   TXSTAbits.TRMT
-#elif defined(__C30__) || defined(__C32__) || defined __XC16__
-    #define mDataRdyUSART() UART2IsPressed()
-    #define mTxRdyUSART()   U2STAbits.TRMT
-#endif
+#define mDataRdyUSART() PIR1bits.RCIF
+#define mTxRdyUSART()   TXSTAbits.TRMT
 
 /******************************************************************************
  * Function:        void putcUSART(char c)
@@ -684,11 +367,7 @@ void InitializeUSART(void)
  *****************************************************************************/
 void putcUSART(char c)  
 {
-    #if defined(__18CXX) || defined(__XC8)
-	    TXREG = c;
-    #else
-        UART2PutChar(c);
-    #endif
+    TXREG = c;
 }
 
 
@@ -714,6 +393,8 @@ void putcUSART(char c)
 #if defined(USB_CDC_SET_LINE_CODING_HANDLER)
 void mySetLineCodingHandler(void)
 {
+    DWORD_VAL dwBaud;
+
     //If the request is not in a valid range
     if(cdc_notice.GetLineCoding.dwDTERate.Val > 115200)
     {
@@ -738,33 +419,10 @@ void mySetLineCodingHandler(void)
         //Update the baudrate info in the CDC driver
         CDCSetBaudRate(cdc_notice.GetLineCoding.dwDTERate.Val);
         
-        //Update the baudrate of the UART
-        #if defined(__18CXX) || defined(__XC8)
-        {
-            DWORD_VAL dwBaud;
-            dwBaud.Val = (DWORD)(GetSystemClock()/4)/line_coding.dwDTERate.Val-1;
-            SPBRG = dwBaud.v[0];
-            SPBRGH = dwBaud.v[1];
-        }    
-        #elif defined(__C30__) || defined __XC16__
-        {
-            DWORD_VAL dwBaud;
-            #if defined(__dsPIC33EP512MU810__) || defined (__PIC24EP512GU810__)
-            dwBaud.Val = ((GetPeripheralClock()/(unsigned long)(16 * line_coding.dwDTERate.Val)))- 1;
-            #else
-            dwBaud.Val = (((GetPeripheralClock()/2)+(BRG_DIV2/2*line_coding.dwDTERate.Val))/BRG_DIV2/line_coding.dwDTERate.Val-1);
-            #endif
-            U2BRG = dwBaud.Val;
-        }    
-        #elif defined(__C32__)
-        {
-            U2BRG = ((GetPeripheralClock()+(BRG_DIV2/2*line_coding.dwDTERate.Val))/BRG_DIV2/line_coding.dwDTERate.Val-1);
-            //U2MODE = 0;
-            U2MODEbits.BRGH = BRGH2;
-            //U2STA = 0;
-        }    
-        #endif
-    }
+        dwBaud.Val = (DWORD)(GetSystemClock()/4)/line_coding.dwDTERate.Val-1;
+        SPBRG = dwBaud.v[0];
+        SPBRGH = dwBaud.v[1];
+    }    
 }
 #endif
 
@@ -788,8 +446,6 @@ unsigned char getcUSART ()
 {
 	char  c;
 
-    #if defined(__18CXX) || defined(__XC8)
-
 	if (RCSTAbits.OERR)  // in case of overrun error
 	{                    // we should never see an overrun error, but if we do, 
 		RCSTAbits.CREN = 0;  // reset the port
@@ -803,11 +459,6 @@ unsigned char getcUSART ()
 // not necessary.  EUSART auto clears the flag when RCREG is cleared
 //	PIR1bits.RCIF = 0;    // clear Flag
 
-    #endif
-
-    #if defined(__C30__) || defined(__C32__) || defined __XC16__
-        c = UART2GetChar();
-    #endif
 
 	return c;
 }
@@ -833,6 +484,8 @@ void ProcessIO(void)
 {   
     //Blink the LEDs according to the USB device status
     BlinkUSBStatus();
+    InvertLCD();
+    
     // User Application USB tasks
     if((USBDeviceState < CONFIGURED_STATE)||(USBSuspendControl==1)) return;
 
@@ -902,6 +555,27 @@ void ProcessIO(void)
 	}
 
     CDCTxService();
+
+    // Handle HID packets
+    if(!HIDRxHandleBusy(HIDOutHandle))
+    {
+        //We just received a packet of data from the USB host.
+        //Check the first byte of the packet to see what command the host
+        //application software wants us to fulfill.
+/*        switch(ReceivedDataBuffer[0])				//Look at the data the host sent, to see what kind of application specific command it sent.
+        {
+            case 0x80:  //Toggle LEDs command
+		        blinkStatusValid = FALSE;			//Stop blinking the LEDs automatically, going to manually control them now.
+                if(mGetLED_1() == mGetLED_2())
+                {
+                    mLED_1_Toggle();
+                    mLED_2_Toggle();
+                }
+        }
+ */
+        mLCD_SetDigit(ReceivedDataBuffer[0]);
+    }
+    HIDOutHandle = HIDRxPacket(HID_EP, (BYTE*)&ReceivedDataBuffer, 64);
 
 }//end ProcessIO
 
@@ -995,6 +669,19 @@ void BlinkUSBStatus(void)
 
 }//end BlinkUSBStatus
 
+void InvertLCD(void)
+{
+    static WORD lcd_count=0;
+
+    if (lcd_count == 0)
+        lcd_count = 100U;
+
+    lcd_count--;
+
+    if (lcd_count == 0) {
+        mLCD_Invert();
+    }
+}
 
 // ******************************************************************************************************
 // ************** USB Callback Functions ****************************************************************
@@ -1245,6 +932,9 @@ void USBCBInitEP(void)
     USBEnableEndpoint(HID_EP,USB_IN_ENABLED|USB_OUT_ENABLED|USB_HANDSHAKE_ENABLED|USB_DISALLOW_SETUP);
     //Re-arm the OUT endpoint for the next packet
    // USBOutHandle = HIDRxPacket(HID_EP,(BYTE*)&ReceivedDataBuffer,64);
+
+    //Re-arm the OUT endpoint for the next packet
+    HIDOutHandle = HIDRxPacket(HID_EP,(BYTE*)&ReceivedDataBuffer,64);
 }
 
 /********************************************************************
