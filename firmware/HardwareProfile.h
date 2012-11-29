@@ -72,6 +72,7 @@
 
 #define mLCD_Init() { TRISB = 0; LATB = 0; TRISAbits.TRISA2 = 0; LATAbits.LATA2 = 0;}
 #define mLCD_Invert() { LATB = ~LATB; LATAbits.LATA2 = ~LATAbits.LATA2; }
-#define mLCD_SetDigit(v) { LATB = v ^ (LATAbits.LATA2? 0xff : 00); }
+#define mLCD_SetDigit(v) { LATB = (v) ^ (LATAbits.LATA2? 0xff : 00); }
+#define mLCD_GetDigit() (LATB  ^ (LATAbits.LATA2? 0xff : 00))
 
 

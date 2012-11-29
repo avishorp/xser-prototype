@@ -77,35 +77,16 @@ USB_HANDLE  lastTransmission;
 USB_HANDLE HIDOutHandle = 0;    //USB handle.  Must be initialized to 0 at startup.
 USB_HANDLE HIDInHandle = 0;     //USB handle.  Must be initialized to 0 at startup.
 
-#if defined(__XC8)
-    #if defined(_18F14K50) || defined(_18F13K50) || defined(_18LF14K50) || defined(_18LF13K50)
-        #define RX_DATA_BUFFER_ADDRESS @0x260
-        #define TX_DATA_BUFFER_ADDRESS @0x2A0
-    #elif  defined(_18F2455)   || defined(_18F2550)   || defined(_18F4455)  || defined(_18F4550)\
-        || defined(_18F2458)   || defined(_18F2453)   || defined(_18F4558)  || defined(_18F4553)\
-        || defined(_18LF24K50) || defined(_18F24K50)  || defined(_18LF25K50)\
-        || defined(_18F25K50)  || defined(_18LF45K50) || defined(_18F45K50)
-        #define RX_DATA_BUFFER_ADDRESS @0x500
-        #define TX_DATA_BUFFER_ADDRESS @0x540
-    #elif defined(_18F4450) || defined(_18F2450)
-        #define RX_DATA_BUFFER_ADDRESS @0x480
-        #define TX_DATA_BUFFER_ADDRESS @0x4C0
-    #elif defined(_16F1459)
-        #define RX_DATA_BUFFER_ADDRESS @0x2050
-        #define TX_DATA_BUFFER_ADDRESS @0x20A0
-    #else
-        #define RX_DATA_BUFFER_ADDRESS
-        #define RX_DATA_BUFFER_ADDRESS
-    #endif
-#else
-    #define RX_DATA_BUFFER_ADDRESS
-    #define TX_DATA_BUFFER_ADDRESS
-#endif
-unsigned char ReceivedDataBuffer[64] RX_DATA_BUFFER_ADDRESS;
+#pragma udata USB_VARS
+unsigned char ReceivedDataBuffer[64];
 //unsigned char ToSendDataBuffer[64] TX_DATA_BUFFER_ADDRESS;
+#pragma udata
 
-//BOOL stringPrinted;
+// If non-zero, displays a "wait for command" pattern
+unsigned char NoLCDCmd;
 
+// Decimal to 7-segment translation table
+ROM BYTE SevenSeg[] = {0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f };
 
 /** P R I V A T E  P R O T O T Y P E S ***************************************/
 static void InitializeSystem(void);
@@ -265,14 +246,18 @@ static void InitializeSystem(void)
     #if defined(USE_SELF_POWER_SENSE_IO)
     tris_self_power = INPUT_PIN;	// See HardwareProfile.h
     #endif
-    
+
+    // Clear HID in and out handles
+    HIDOutHandle = 0;
+    HIDInHandle = 0;
+
     UserInit();
 
     USBDeviceInit();	//usb_device.c.  Initializes USB module SFRs and firmware
     					//variables to known states.
 
-    HIDOutHandle = 0;
-    HIDInHandle = 0;
+
+
 }//end InitializeSystem
 
 
@@ -311,7 +296,10 @@ void UserInit(void)
 
     mInitAllLEDs();
     mLCD_Init();
-    mLCD_SetDigit(0x06);
+
+    NoLCDCmd = 0xff;
+    mLCD_SetDigit(0x01);
+
 }//end UserInit
 
 /******************************************************************************
@@ -481,7 +469,9 @@ unsigned char getcUSART ()
  * Note:            None
  *******************************************************************/
 void ProcessIO(void)
-{   
+{
+    unsigned char digit;
+
     //Blink the LEDs according to the USB device status
     BlinkUSBStatus();
     InvertLCD();
@@ -558,24 +548,20 @@ void ProcessIO(void)
 
     // Handle HID packets
     if(!HIDRxHandleBusy(HIDOutHandle))
+ 
     {
-        //We just received a packet of data from the USB host.
-        //Check the first byte of the packet to see what command the host
-        //application software wants us to fulfill.
-/*        switch(ReceivedDataBuffer[0])				//Look at the data the host sent, to see what kind of application specific command it sent.
-        {
-            case 0x80:  //Toggle LEDs command
-		        blinkStatusValid = FALSE;			//Stop blinking the LEDs automatically, going to manually control them now.
-                if(mGetLED_1() == mGetLED_2())
-                {
-                    mLED_1_Toggle();
-                    mLED_2_Toggle();
-                }
-        }
- */
-        mLCD_SetDigit(ReceivedDataBuffer[0]);
+        // Stop the "Wait" pattern
+        NoLCDCmd = 0;
+
+        // Display the LSB digit
+        digit = ReceivedDataBuffer[0] % 10;
+        mLCD_SetDigit(SevenSeg[digit]);
+        // (in the prototype, we only have a single digit)
+
+        // Re-arm the HID EP
+        HIDOutHandle = HIDRxPacket(HID_EP, (BYTE*)&ReceivedDataBuffer, 64);
     }
-    HIDOutHandle = HIDRxPacket(HID_EP, (BYTE*)&ReceivedDataBuffer, 64);
+
 
 }//end ProcessIO
 
@@ -600,6 +586,7 @@ void ProcessIO(void)
 void BlinkUSBStatus(void)
 {
     static WORD led_count=0;
+    unsigned char digit;
     
     if(led_count == 0)led_count = 10000U;
     led_count--;
@@ -665,6 +652,15 @@ void BlinkUSBStatus(void)
                 }
             }//end if
         }//end if(...)
+
+        if ((led_count==0) && NoLCDCmd) {
+            digit = mLCD_GetDigit();
+            digit <<= 1;
+            if (digit == 0x40)
+                digit = 0x01;
+
+            mLCD_SetDigit(digit);
+        }
     }//end if(UCONbits.SUSPND...)
 
 }//end BlinkUSBStatus
